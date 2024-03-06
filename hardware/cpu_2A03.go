@@ -56,6 +56,7 @@ const (
 	IndirectY
 	Relative
 	Accumulator
+	Indirect //only for JMP
 	NoneAddressing
 )
 
@@ -147,6 +148,10 @@ func (c *CPU) address_operand(mode AddressingMode) uint16 {
 		address = (uint16(msb) << 8) | uint16(lsb)
 	case Relative:
 		address = c.program_counter
+	case Indirect:
+		lsb := c.mem_read(c.program_counter)
+		msb := c.mem_read(c.program_counter + 1)
+		address = (uint16(msb) << 8) | uint16(lsb)
 	}
 
 	return address
@@ -373,6 +378,59 @@ func (c *CPU) dec(mode AddressingMode) {
 	c.updateZandN(value)
 }
 
+func (c *CPU) dex() {
+	c.index_x--
+	c.updateZandN(c.index_x)
+}
+
+func (c *CPU) dey() {
+	c.index_y--
+	c.updateZandN(c.index_y)
+}
+
+func (c *CPU) eor(mode AddressingMode) {
+	address := c.address_operand(mode)
+	value := c.mem_read(address)
+	c.accumulator = c.accumulator ^ value
+	c.updateZandN(c.accumulator)
+}
+
+func (c *CPU) inc(mode AddressingMode) {
+	address := c.address_operand(mode)
+	value := c.mem_read(address)
+	value++
+	c.mem_write(address, value)
+	c.updateZandN(value)
+}
+
+func (c *CPU) inx() {
+	c.index_x++
+	c.updateZandN(c.index_x)
+}
+
+func (c *CPU) iny() {
+	c.index_y++
+	c.updateZandN(c.index_y)
+}
+
+func (c *CPU) lda(mode AddressingMode) {
+	address := c.address_operand(mode)
+	c.accumulator = c.mem_read(address)
+	c.updateZandN(c.accumulator)
+}
+
+func (c *CPU) ldx(mode AddressingMode) {
+	address := c.address_operand(mode)
+	c.index_x = c.mem_read(address)
+	c.updateZandN(c.index_x)
+}
+
+func (c *CPU) ldy(mode AddressingMode) {
+	address := c.address_operand(mode)
+	c.index_y = c.mem_read(address)
+	c.updateZandN(c.index_y)
+}
+
 func (c *CPU) load(instructions []uint8) {
 	for i, val := range instructions {
 		c.memory[8000+i] = val
@@ -534,6 +592,60 @@ func (c *CPU) Interpret() {
 		case 0xd1:
 			c.cmp(IndirectY)
 			c.program_counter++
+
+		case 0xa9:
+			c.lda(Immediate)
+			c.program_counter++
+		case 0xa5:
+			c.lda(ZeroPage)
+			c.program_counter++
+		case 0xb5:
+			c.lda(ZeroPageX)
+			c.program_counter++
+		case 0xad:
+			c.lda(Absolute)
+			c.program_counter += 2
+		case 0xbd:
+			c.lda(AbsoluteX)
+			c.program_counter += 2
+		case 0xb9:
+			c.lda(AbsoluteY)
+			c.program_counter += 2
+		case 0xa1:
+			c.lda(IndirectX)
+			c.program_counter++
+		case 0xb1:
+			c.lda(IndirectY)
+			c.program_counter++
+
+		case 0xa2:
+			c.ldx(Immediate)
+			c.program_counter++
+		case 0xa6:
+			c.ldx(ZeroPage)
+			c.program_counter++
+		case 0xae:
+			c.ldx(Absolute)
+			c.program_counter += 2
+		case 0xbe:
+			c.ldx(AbsoluteY)
+			c.program_counter += 2
+
+		case 0xa0:
+			c.ldy(Immediate)
+			c.program_counter++
+		case 0xa4:
+			c.ldy(ZeroPage)
+			c.program_counter++
+		case 0xb4:
+			c.ldy(ZeroPageX)
+			c.program_counter++
+		case 0xac:
+			c.ldy(Absolute)
+			c.program_counter += 2
+		case 0xbc:
+			c.ldy(AbsoluteX)
+			c.program_counter += 2
 
 		}
 	}
