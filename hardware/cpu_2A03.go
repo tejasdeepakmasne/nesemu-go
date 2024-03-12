@@ -1,4 +1,10 @@
+// TODO: implement SBC
 package hardware
+
+import (
+	"fmt"
+	"os"
+)
 
 // Constants for stack start address and stack reset value
 // The reason the NES stack ends at 253 bytes (0x01FD) rather than 256 bytes (0x01FF) is due to a hardware limitation.
@@ -45,19 +51,19 @@ const (
 type AddressingMode int
 
 const (
-	Immediate AddressingMode = iota
-	ZeroPage
-	Absolute
-	ZeroPageX
-	ZeroPageY
-	AbsoluteX
-	AbsoluteY
-	IndirectX
-	IndirectY
-	Relative
-	Accumulator
-	Indirect //only for JMP
-	NoneAddressing
+	modeImmediate AddressingMode = iota
+	modeZeroPage
+	modeAbsolute
+	modeZeroPageX
+	modeZeroPageY
+	modeAbsoluteX
+	modeAbsoluteY
+	modeIndirectX
+	modeIndirectY
+	modeRelative
+	modeAccumulator
+	modeIndirect //only for JMP
+	modeNoneAddressing
 )
 
 // helper functions to read and write memory
@@ -85,12 +91,12 @@ func (c *CPU) mem_write_16(address uint16, data uint16) {
 
 // stack functions
 func (c *CPU) push(data uint8) {
-	c.memory[c.stack_pointer] = data
+	c.memory[STACK_START+uint16(c.stack_pointer)] = data
 	c.stack_pointer--
 }
 
 func (c *CPU) pop() uint8 {
-	top := c.memory[c.stack_pointer]
+	top := c.memory[STACK_START+uint16(c.stack_pointer)]
 	c.stack_pointer++
 	return top
 }
@@ -98,9 +104,9 @@ func (c *CPU) pop() uint8 {
 func (c *CPU) push_16(data uint16) {
 	lsb := uint8(data & 0xFF)
 	msb := uint8(data >> 8)
-	c.memory[c.stack_pointer] = lsb
+	c.memory[STACK_START+uint16(c.stack_pointer)] = lsb
 	c.stack_pointer--
-	c.memory[c.stack_pointer] = msb
+	c.memory[STACK_START+uint16(c.stack_pointer)] = msb
 	c.stack_pointer--
 }
 
@@ -116,42 +122,49 @@ func (c *CPU) pop_16() uint16 {
 func (c *CPU) address_operand(mode AddressingMode) uint16 {
 	var address uint16
 	switch mode {
-	case Immediate:
+	case modeImmediate:
 		address = c.program_counter
-	case ZeroPage:
+	case modeZeroPage:
 		address = uint16(c.mem_read(c.program_counter))
-	case Absolute:
+	case modeAbsolute:
 		address = c.mem_read_16(c.program_counter)
-	case ZeroPageX:
+	case modeZeroPageX:
 		base_addr := c.mem_read(c.program_counter)
 		address = uint16(base_addr + c.index_x)
-	case ZeroPageY:
+	case modeZeroPageY:
 		base_addr := c.mem_read(c.program_counter)
 		address = uint16(base_addr + c.index_y)
-	case AbsoluteX:
+	case modeAbsoluteX:
 		base_addr := c.mem_read_16(c.program_counter)
 		address = base_addr + uint16(c.index_x)
-	case AbsoluteY:
+	case modeAbsoluteY:
 		base_addr := c.mem_read_16(c.program_counter)
 		address = base_addr + uint16(c.index_y)
-	case IndirectX:
+	case modeIndirectX:
 		base := c.mem_read(c.program_counter)
 		var offset uint8 = base + c.index_x
 		lsb := c.mem_read(uint16(offset))
 		msb := c.mem_read(uint16(offset + 1))
 		address = (uint16(msb) << 8) | uint16(lsb)
-	case IndirectY:
+	case modeIndirectY:
 		base := c.mem_read(c.program_counter)
 		var offset uint8 = base + c.index_y
 		lsb := c.mem_read(uint16(offset))
 		msb := c.mem_read(uint16(offset + 1))
 		address = (uint16(msb) << 8) | uint16(lsb)
-	case Relative:
+	case modeRelative:
 		address = c.program_counter
-	case Indirect:
-		lsb := c.mem_read(c.program_counter)
-		msb := c.mem_read(c.program_counter + 1)
-		address = (uint16(msb) << 8) | uint16(lsb)
+	case modeIndirect:
+		lsb := uint16(c.mem_read(c.program_counter))
+		msb := uint16(c.mem_read(c.program_counter + 1))
+		indirectVector := (msb << 8) | lsb
+		address_lsb := uint16(c.mem_read(indirectVector))
+		address_msb := uint16(c.mem_read(indirectVector + 1))
+		if indirectVector&0x00ff == 0x00ff {
+			address_msb = address_lsb & 0xff00
+		}
+
+		address = (address_msb << 8) | address_lsb
 	}
 
 	return address
@@ -224,7 +237,7 @@ func (c *CPU) and(mode AddressingMode) {
 }
 
 func (c *CPU) asl(mode AddressingMode) {
-	if mode == Accumulator {
+	if mode == modeAccumulator {
 		c.setFlagValue(C, extractBit(c.accumulator, 7))
 		c.accumulator = c.accumulator << 1
 	} else {
@@ -240,7 +253,7 @@ func (c *CPU) asl(mode AddressingMode) {
 
 func (c *CPU) bcc() {
 	if c.getFlagValue(C) == 0 {
-		address := c.address_operand(Relative)
+		address := c.address_operand(modeRelative)
 		value := c.mem_read(address)
 		c.program_counter += uint16(value)
 	}
@@ -248,7 +261,7 @@ func (c *CPU) bcc() {
 
 func (c *CPU) bcs() {
 	if c.getFlagValue(C) == 1 {
-		address := c.address_operand(Relative)
+		address := c.address_operand(modeRelative)
 		value := c.mem_read(address)
 		c.program_counter += uint16(value)
 	}
@@ -256,7 +269,7 @@ func (c *CPU) bcs() {
 
 func (c *CPU) beq() {
 	if c.getFlagValue(Z) == 1 {
-		address := c.address_operand(Relative)
+		address := c.address_operand(modeRelative)
 		value := c.mem_read(address)
 		c.program_counter += uint16(value)
 	}
@@ -277,7 +290,7 @@ func (c *CPU) bit(mode AddressingMode) {
 
 func (c *CPU) bmi() {
 	if c.getFlagValue(N) == 1 {
-		address := c.address_operand(Relative)
+		address := c.address_operand(modeRelative)
 		value := c.mem_read(address)
 		c.program_counter += uint16(value)
 	}
@@ -285,7 +298,7 @@ func (c *CPU) bmi() {
 
 func (c *CPU) bne() {
 	if c.getFlagValue(C) == 0 {
-		address := c.address_operand(Relative)
+		address := c.address_operand(modeRelative)
 		value := c.mem_read(address)
 		c.program_counter += uint16(value)
 	}
@@ -293,7 +306,7 @@ func (c *CPU) bne() {
 
 func (c *CPU) bpl() {
 	if c.getFlagValue(N) == 0 {
-		address := c.address_operand(Relative)
+		address := c.address_operand(modeRelative)
 		value := c.mem_read(address)
 		c.program_counter += uint16(value)
 	}
@@ -308,7 +321,7 @@ func (c *CPU) brk() {
 
 func (c *CPU) bvc() {
 	if c.getFlagValue(V) == 0 {
-		address := c.address_operand(Relative)
+		address := c.address_operand(modeRelative)
 		value := c.mem_read(address)
 		c.program_counter += uint16(value)
 	}
@@ -316,7 +329,7 @@ func (c *CPU) bvc() {
 
 func (c *CPU) bvs() {
 	if c.getFlagValue(V) == 1 {
-		address := c.address_operand(Relative)
+		address := c.address_operand(modeRelative)
 		value := c.mem_read(address)
 		c.program_counter += uint16(value)
 	}
@@ -413,6 +426,18 @@ func (c *CPU) iny() {
 	c.updateZandN(c.index_y)
 }
 
+func (c *CPU) jmp(mode AddressingMode) {
+	address := c.address_operand(mode)
+	c.program_counter = address
+
+}
+
+func (c *CPU) jsr() {
+	c.push_16(c.program_counter - 1)
+	address := c.address_operand(modeAbsolute)
+	c.program_counter = address
+}
+
 func (c *CPU) lda(mode AddressingMode) {
 	address := c.address_operand(mode)
 	c.accumulator = c.mem_read(address)
@@ -431,9 +456,153 @@ func (c *CPU) ldy(mode AddressingMode) {
 	c.updateZandN(c.index_y)
 }
 
+func (c *CPU) lsr(mode AddressingMode) {
+	if mode == modeAccumulator {
+		c.setFlagValue(C, extractBit(c.accumulator, 0))
+		c.accumulator = c.accumulator >> 1
+		c.updateZandN(c.accumulator)
+	} else {
+		address := c.address_operand(mode)
+		value := c.mem_read(address)
+		c.setFlagValue(C, extractBit(value, 0))
+		value = value >> 1
+		c.mem_write(address, value)
+		c.updateZandN(value)
+	}
+}
+
+func (c *CPU) nop() {
+
+}
+
+func (c *CPU) ora(mode AddressingMode) {
+	address := c.address_operand(mode)
+	value := c.mem_read(address)
+	c.accumulator = c.accumulator | value
+	c.updateZandN(c.accumulator)
+}
+
+func (c *CPU) pha() {
+	c.push(c.accumulator)
+}
+
+func (c *CPU) php() {
+	c.push(c.status)
+}
+
+func (c *CPU) pla() {
+	c.accumulator = c.pop()
+	c.updateZandN(c.accumulator)
+}
+
+func (c *CPU) plp() {
+	c.status = c.pop()
+	c.updateZandN(c.status)
+}
+
+func (c *CPU) rol(mode AddressingMode) {
+	if mode == modeAccumulator {
+		prevCarry := extractBit(c.status, 0)
+		c.setFlagValue(C, extractBit(c.accumulator, 7))
+		c.accumulator = (c.accumulator << 1) | prevCarry
+		c.updateZandN(c.accumulator)
+	} else {
+		address := c.address_operand(mode)
+		value := c.mem_read(address)
+		prevCarry := extractBit(c.status, 0)
+		c.setFlagValue(C, extractBit(value, 7))
+		value = (value << 1) | prevCarry
+		c.mem_write(address, value)
+		c.updateZandN(value)
+	}
+}
+
+func (c *CPU) ror(mode AddressingMode) {
+	if mode == modeAccumulator {
+		prevCarry := extractBit(c.status, 0)
+		c.setFlagValue(C, extractBit(c.accumulator, 0))
+		c.accumulator = (c.accumulator >> 1) | (prevCarry << 7)
+		c.updateZandN(c.accumulator)
+	} else {
+		address := c.address_operand(mode)
+		value := c.mem_read(address)
+		prevCarry := extractBit(c.status, 0)
+		c.setFlagValue(C, extractBit(c.accumulator, 0))
+		value = (value >> 1) | (prevCarry << 7)
+		c.mem_write(address, value)
+		c.updateZandN(value)
+	}
+}
+
+func (c *CPU) rti() {
+	c.status = c.pop()
+	c.program_counter = c.pop_16()
+}
+
+func (c *CPU) rts() {
+	c.program_counter = c.pop_16()
+}
+
+func (c *CPU) sec() {
+	c.setFlagValue(C, 1)
+}
+
+func (c *CPU) sed() {
+	c.setFlagValue(D, 1)
+}
+
+func (c *CPU) sei() {
+	c.setFlagValue(I, 1)
+}
+
+func (c *CPU) sta(mode AddressingMode) {
+	address := c.address_operand(mode)
+	c.mem_write(address, c.accumulator)
+}
+
+func (c *CPU) stx(mode AddressingMode) {
+	address := c.address_operand(mode)
+	c.mem_write(address, c.index_x)
+}
+
+func (c *CPU) sty(mode AddressingMode) {
+	address := c.address_operand(mode)
+	c.mem_write(address, c.index_y)
+}
+
+func (c *CPU) tax() {
+	c.index_x = c.accumulator
+	c.updateZandN(c.index_x)
+}
+
+func (c *CPU) tay() {
+	c.index_y = c.accumulator
+	c.updateZandN(c.index_y)
+}
+
+func (c *CPU) tsx() {
+	c.index_x = c.status
+	c.updateZandN(c.index_x)
+}
+
+func (c *CPU) txa() {
+	c.accumulator = c.index_x
+	c.updateZandN(c.accumulator)
+}
+
+func (c *CPU) txs() {
+	c.status = c.index_x
+	c.updateZandN(c.index_x)
+}
+
+func (c *CPU) tya() {
+	c.accumulator = c.index_y
+	c.updateZandN(c.accumulator)
+}
+
 func (c *CPU) load(instructions []uint8) {
 	for i, val := range instructions {
-		c.memory[8000+i] = val
+		c.memory[0x8000+i] = val
 	}
 	c.mem_write_16(0xFFFC, 0x8000) // set the reset vector https://en.wikipedia.org/wiki/Reset_vector
 }
@@ -455,68 +624,68 @@ func (c *CPU) Interpret() {
 		switch opcode {
 
 		case 0x69:
-			c.adc(Immediate)
+			c.adc(modeImmediate)
 			c.program_counter++
 		case 0x65:
-			c.adc(ZeroPage)
+			c.adc(modeZeroPage)
 			c.program_counter++
 		case 0x75:
-			c.adc(ZeroPageX)
+			c.adc(modeZeroPageX)
 			c.program_counter++
 		case 0x6D:
-			c.adc(Absolute)
+			c.adc(modeAbsolute)
 			c.program_counter += 2
 		case 0x7d:
-			c.adc(AbsoluteX)
+			c.adc(modeAbsoluteX)
 			c.program_counter += 2
 		case 0x79:
-			c.adc(AbsoluteY)
+			c.adc(modeAbsoluteY)
 			c.program_counter += 2
 		case 0x61:
-			c.adc(IndirectX)
+			c.adc(modeIndirectX)
 			c.program_counter++
 		case 0x71:
-			c.adc(IndirectY)
+			c.adc(modeIndirectY)
 			c.program_counter++
 
 		case 0x29:
-			c.adc(Immediate)
+			c.and(modeImmediate)
 			c.program_counter++
 		case 0x25:
-			c.adc(ZeroPage)
+			c.and(modeZeroPage)
 			c.program_counter++
 		case 0x35:
-			c.adc(ZeroPageX)
+			c.and(modeZeroPageX)
 			c.program_counter++
 		case 0x2d:
-			c.adc(Absolute)
+			c.and(modeAbsolute)
 			c.program_counter += 2
 		case 0x3d:
-			c.adc(AbsoluteX)
+			c.and(modeAbsoluteX)
 			c.program_counter += 2
 		case 0x39:
-			c.adc(AbsoluteY)
+			c.and(modeAbsoluteY)
 			c.program_counter += 2
 		case 0x21:
-			c.adc(IndirectX)
+			c.and(modeIndirectX)
 			c.program_counter++
 		case 0x31:
-			c.adc(IndirectY)
+			c.and(modeIndirectY)
 			c.program_counter++
 
 		case 0x0a:
-			c.asl(Accumulator)
+			c.asl(modeAccumulator)
 		case 0x06:
-			c.asl(ZeroPage)
+			c.asl(modeZeroPage)
 			c.program_counter++
 		case 0x16:
-			c.asl(ZeroPageX)
+			c.asl(modeZeroPageX)
 			c.program_counter++
 		case 0x0e:
-			c.asl(Absolute)
+			c.asl(modeAbsolute)
 			c.program_counter += 2
 		case 0x1e:
-			c.asl(AbsoluteX)
+			c.asl(modeAbsoluteX)
 			c.program_counter += 2
 
 		case 0x90:
@@ -532,10 +701,10 @@ func (c *CPU) Interpret() {
 			c.program_counter++
 
 		case 0x24:
-			c.bit(ZeroPage)
+			c.bit(modeZeroPage)
 			c.program_counter++
 		case 0x2c:
-			c.bit(Absolute)
+			c.bit(modeAbsolute)
 			c.program_counter += 2
 
 		case 0x30:
@@ -566,86 +735,334 @@ func (c *CPU) Interpret() {
 		case 0xd8:
 			c.cld()
 		case 0x58:
+			c.cli()
+		case 0xb8:
 			c.clv()
 
 		case 0xc9:
-			c.cmp(Immediate)
+			c.cmp(modeImmediate)
 			c.program_counter++
 		case 0xc5:
-			c.cmp(ZeroPage)
+			c.cmp(modeZeroPage)
 			c.program_counter++
 		case 0xd5:
-			c.cmp(ZeroPageX)
+			c.cmp(modeZeroPageX)
 			c.program_counter++
 		case 0xcd:
-			c.cmp(Absolute)
+			c.cmp(modeAbsolute)
 			c.program_counter += 2
 		case 0xdd:
-			c.cmp(AbsoluteX)
+			c.cmp(modeAbsoluteX)
 			c.program_counter += 2
 		case 0xd9:
-			c.cmp(AbsoluteY)
+			c.cmp(modeAbsoluteY)
 			c.program_counter += 2
 		case 0xc1:
-			c.cmp(IndirectX)
+			c.cmp(modeIndirectX)
 			c.program_counter++
 		case 0xd1:
-			c.cmp(IndirectY)
+			c.cmp(modeIndirectY)
 			c.program_counter++
 
+		case 0xe0:
+			c.cpx(modeImmediate)
+			c.program_counter++
+		case 0xe4:
+			c.cpx(modeZeroPage)
+			c.program_counter++
+		case 0xec:
+			c.cpx(modeAbsolute)
+			c.program_counter += 2
+
+		case 0xc0:
+			c.cpy(modeImmediate)
+			c.program_counter++
+
+		case 0xc4:
+			c.cpy(modeZeroPage)
+			c.program_counter++
+		case 0xcc:
+			c.cpy(modeAbsolute)
+			c.program_counter += 2
+
+		case 0xc6:
+			c.dec(modeZeroPage)
+			c.program_counter++
+		case 0xd6:
+			c.dec(modeZeroPageX)
+			c.program_counter++
+		case 0xce:
+			c.dec(modeAbsolute)
+			c.program_counter += 2
+		case 0xde:
+			c.dec(modeAbsoluteX)
+			c.program_counter += 2
+
+		case 0xca:
+			c.dex()
+		case 0x88:
+			c.dey()
+
+		case 0x49:
+			c.eor(modeImmediate)
+			c.program_counter++
+		case 0x45:
+			c.eor(modeZeroPage)
+			c.program_counter++
+		case 0x55:
+			c.eor(modeZeroPageX)
+			c.program_counter++
+		case 0x4d:
+			c.eor(modeAbsolute)
+			c.program_counter += 2
+		case 0x5d:
+			c.eor(modeAbsoluteX)
+			c.program_counter += 2
+		case 0x59:
+			c.eor(modeAbsoluteY)
+			c.program_counter += 2
+		case 0x41:
+			c.eor(modeIndirectX)
+			c.program_counter++
+		case 0x51:
+			c.eor(modeIndirectY)
+			c.program_counter++
+
+		case 0xe6:
+			c.inc(modeZeroPage)
+			c.program_counter++
+		case 0xf6:
+			c.inc(modeZeroPageX)
+			c.program_counter++
+		case 0xee:
+			c.inc(modeAbsolute)
+			c.program_counter += 2
+		case 0xfe:
+			c.inc(modeAbsoluteX)
+			c.program_counter += 2
+
+		case 0xe8:
+			c.inx()
+		case 0xc8:
+			c.iny()
+
+		case 0x4c:
+			c.jmp(modeAbsolute)
+			c.program_counter += 2
+		case 0x6c:
+			c.jmp(modeIndirect)
+			c.program_counter += 2
+
+		case 0x20:
+			c.jsr()
+			c.program_counter += 2
+
 		case 0xa9:
-			c.lda(Immediate)
+			c.lda(modeImmediate)
 			c.program_counter++
 		case 0xa5:
-			c.lda(ZeroPage)
+			c.lda(modeZeroPage)
 			c.program_counter++
 		case 0xb5:
-			c.lda(ZeroPageX)
+			c.lda(modeZeroPageX)
 			c.program_counter++
 		case 0xad:
-			c.lda(Absolute)
+			c.lda(modeAbsolute)
 			c.program_counter += 2
 		case 0xbd:
-			c.lda(AbsoluteX)
+			c.lda(modeAbsoluteX)
 			c.program_counter += 2
 		case 0xb9:
-			c.lda(AbsoluteY)
+			c.lda(modeAbsoluteY)
 			c.program_counter += 2
 		case 0xa1:
-			c.lda(IndirectX)
+			c.lda(modeIndirectX)
 			c.program_counter++
 		case 0xb1:
-			c.lda(IndirectY)
+			c.lda(modeIndirectY)
 			c.program_counter++
 
 		case 0xa2:
-			c.ldx(Immediate)
+			c.ldx(modeImmediate)
 			c.program_counter++
 		case 0xa6:
-			c.ldx(ZeroPage)
+			c.ldx(modeZeroPage)
 			c.program_counter++
 		case 0xae:
-			c.ldx(Absolute)
+			c.ldx(modeAbsolute)
 			c.program_counter += 2
 		case 0xbe:
-			c.ldx(AbsoluteY)
+			c.ldx(modeAbsoluteY)
 			c.program_counter += 2
 
 		case 0xa0:
-			c.ldy(Immediate)
+			c.ldy(modeImmediate)
 			c.program_counter++
 		case 0xa4:
-			c.ldy(ZeroPage)
+			c.ldy(modeZeroPage)
 			c.program_counter++
 		case 0xb4:
-			c.ldy(ZeroPageX)
+			c.ldy(modeZeroPageX)
 			c.program_counter++
 		case 0xac:
-			c.ldy(Absolute)
+			c.ldy(modeAbsolute)
 			c.program_counter += 2
 		case 0xbc:
-			c.ldy(AbsoluteX)
+			c.ldy(modeAbsoluteX)
 			c.program_counter += 2
+
+		case 0x4a:
+			c.lsr(modeAccumulator)
+		case 0x46:
+			c.lsr(modeZeroPage)
+			c.program_counter++
+		case 0x56:
+			c.lsr(modeZeroPageX)
+			c.program_counter++
+		case 0x4e:
+			c.lsr(modeAbsolute)
+			c.program_counter += 2
+		case 0x5e:
+			c.lsr(modeAbsoluteX)
+			c.program_counter += 2
+
+		case 0xea:
+			c.nop()
+
+		case 0x09:
+			c.ora(modeImmediate)
+			c.program_counter++
+		case 0x05:
+			c.ora(modeZeroPage)
+			c.program_counter++
+		case 0x015:
+			c.ora(modeZeroPageX)
+			c.program_counter++
+		case 0x0d:
+			c.ora(modeAbsolute)
+			c.program_counter += 2
+		case 0x1d:
+			c.ora(modeAbsoluteX)
+			c.program_counter += 2
+		case 0x19:
+			c.ora(modeAbsoluteY)
+			c.program_counter += 2
+		case 0x01:
+			c.ora(modeIndirectX)
+			c.program_counter++
+		case 0x11:
+			c.ora(modeIndirectY)
+			c.program_counter++
+
+		case 0x48:
+			c.pha()
+		case 0x08:
+			c.php()
+		case 0x68:
+			c.pla()
+		case 0x28:
+			c.plp()
+
+		case 0x2a:
+			c.rol(modeAccumulator)
+		case 0x26:
+			c.rol(modeZeroPage)
+			c.program_counter++
+		case 0x36:
+			c.rol(modeZeroPageX)
+			c.program_counter++
+		case 0x2e:
+			c.rol(modeAbsolute)
+			c.program_counter += 2
+		case 0x3e:
+			c.rol(modeAbsoluteX)
+			c.program_counter += 2
+
+		case 0x6a:
+			c.ror(modeAccumulator)
+		case 0x66:
+			c.ror(modeZeroPage)
+			c.program_counter++
+		case 0x76:
+			c.ror(modeZeroPageX)
+			c.program_counter++
+		case 0x6e:
+			c.ror(modeAbsolute)
+			c.program_counter += 2
+		case 0x7e:
+			c.ror(modeAbsoluteX)
+			c.program_counter += 2
+
+		case 0x40:
+			c.rti()
+		case 0x060:
+			c.rts()
+
+			//TODO: Implement SBC
+		case 0x38:
+			c.sec()
+		case 0xf8:
+			c.sed()
+		case 0x78:
+			c.sei()
+
+		case 0x85:
+			c.sta(modeZeroPage)
+			c.program_counter++
+		case 0x95:
+			c.sta(modeZeroPageX)
+			c.program_counter++
+		case 0x8d:
+			c.sta(modeAbsolute)
+			c.program_counter += 2
+		case 0x9d:
+			c.sta(modeAbsoluteX)
+			c.program_counter += 2
+		case 0x99:
+			c.sta(modeAbsoluteY)
+			c.program_counter += 2
+		case 0x81:
+			c.sta(modeIndirectX)
+			c.program_counter++
+		case 0x91:
+			c.sta(modeIndirectY)
+			c.program_counter++
+
+		case 0x86:
+			c.stx(modeZeroPage)
+			c.program_counter++
+		case 0x96:
+			c.stx(modeZeroPageY)
+			c.program_counter++
+		case 0x8e:
+			c.stx(modeAbsolute)
+			c.program_counter += 2
+
+		case 0x84:
+			c.sty(modeZeroPage)
+			c.program_counter++
+		case 0x94:
+			c.sty(modeZeroPageX)
+			c.program_counter++
+		case 0x8c:
+			c.sty(modeAbsolute)
+			c.program_counter++
+
+		case 0xaa:
+			c.tax()
+		case 0xa8:
+			c.tay()
+		case 0xba:
+			c.tsx()
+		case 0x8a:
+			c.txa()
+		case 0x9a:
+			c.txs()
+		case 0x98:
+			c.tya()
+
+		default:
+			fmt.Fprintf(os.Stdout, "UNDEFINED BEHAVIOUR %v at %v", opcode, c.program_counter)
 
 		}
 	}
@@ -665,7 +1082,7 @@ func NewCPU() CPU {
 		status:          0b00100100,
 		program_counter: 0,
 		stack_pointer:   STACK_RESET,
-		memory:          make([]uint8, 0xFFFF),
+		memory:          make([]uint8, 0x10000),
 		//memory takes default 0 with size defined
 	}
 }
