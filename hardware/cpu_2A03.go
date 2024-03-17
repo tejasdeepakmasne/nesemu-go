@@ -1,4 +1,3 @@
-// TODO: implement SBC
 package hardware
 
 import (
@@ -543,6 +542,22 @@ func (c *CPU) rts() {
 	c.program_counter = c.pop_16()
 }
 
+func (c *CPU) sbc(mode AddressingMode) {
+	address := c.address_operand(mode)
+	value := c.mem_read(address)
+	res := c.accumulator - value - (1 - c.getFlagValue(C))
+	if res > 255 {
+		c.setFlags(C)
+	}
+	if res > 127 {
+		c.setFlags(V)
+	}
+
+	c.accumulator = res
+	c.updateZandN(c.accumulator)
+
+}
+
 func (c *CPU) sec() {
 	c.setFlagValue(C, 1)
 }
@@ -998,7 +1013,31 @@ func (c *CPU) Interpret() {
 		case 0x060:
 			c.rts()
 
-			//TODO: Implement SBC
+		case 0xe9:
+			c.sbc(modeImmediate)
+			c.program_counter++
+		case 0xe5:
+			c.sbc(modeZeroPage)
+			c.program_counter++
+		case 0xf5:
+			c.sbc(modeZeroPageX)
+			c.program_counter++
+		case 0xed:
+			c.sbc(modeAbsolute)
+			c.program_counter += 2
+		case 0xfd:
+			c.sbc(modeAbsoluteX)
+			c.program_counter += 2
+		case 0xf9:
+			c.sbc(modeAbsoluteY)
+			c.program_counter += 2
+		case 0xe1:
+			c.sbc(modeIndirectX)
+			c.program_counter++
+		case 0xf1:
+			c.sbc(modeIndirectY)
+			c.program_counter++
+
 		case 0x38:
 			c.sec()
 		case 0xf8:
